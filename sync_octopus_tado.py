@@ -24,11 +24,11 @@ def accumulation_effective_date(reading):
 
 
 def get_calibrated_cumulative_delta(
-    api_key, mprn, checkpoint_date, cutoff_date, calibration_days=14
+    api_key, mprn, checkpoint_dates, cutoff_date, calibration_days=14
 ):
     """Return a guarded physical-register delta from Octopus accumulation data."""
     query_start = min(
-        checkpoint_date - timedelta(days=2),
+        min(checkpoint_dates) - timedelta(days=2),
         cutoff_date - timedelta(days=calibration_days),
     )
     query_end = cutoff_date + timedelta(days=2)
@@ -79,21 +79,31 @@ def get_calibrated_cumulative_delta(
         if effective_date is not None:
             by_date[effective_date] = reading
 
-    checkpoint = by_date.get(checkpoint_date)
     available_dates = [day for day in by_date if day <= cutoff_date]
-    if checkpoint is None or not available_dates:
-        raise RuntimeError(
-            "Octopus cumulative data does not cover the current Tado checkpoint"
-        )
+    if not available_dates:
+        raise RuntimeError("Octopus returned no cumulative data before the cutoff")
     reading_date = max(available_dates)
-    if reading_date <= checkpoint_date:
-        return None
+    shared_dates = [
+        day for day in checkpoint_dates if day in by_date and day < reading_date
+    ]
+    if not shared_dates:
+        raise RuntimeError(
+            "Tado and Octopus have no shared cumulative checkpoint before the cutoff"
+        )
+    checkpoint_date = max(shared_dates)
+    checkpoint = by_date[checkpoint_date]
 
     latest = by_date[reading_date]
     aggregate_delta = Decimal(str(latest["value"])) - Decimal(str(checkpoint["value"]))
     if aggregate_delta <= 0:
         raise RuntimeError("Octopus cumulative register did not increase")
-    return float(aggregate_delta / factor), reading_date, factor, len(ratios)
+    return (
+        float(aggregate_delta / factor),
+        reading_date,
+        factor,
+        len(ratios),
+        checkpoint_date,
+    )
 
 
 def get_consumption_unit_multiplier(source_unit, target_unit, m3_to_kwh_factor):
@@ -583,7 +593,10 @@ def get_meter_reading_total_consumption(
 
             if meter_source == "calibrated-cumulative":
                 cumulative_update = get_calibrated_cumulative_delta(
-                    api_key, mprn, checkpoint_date, cutoff_date
+                    api_key,
+                    mprn,
+                    [parse_api_date(reading["date"]) for reading in readings],
+                    cutoff_date,
                 )
                 if cumulative_update is None:
                     print(
@@ -591,8 +604,22 @@ def get_meter_reading_total_consumption(
                         "Skipping meter update."
                     )
                     return None
-                raw_consumption_delta, reading_date, factor, matched_days = (
-                    cumulative_update
+                (
+                    raw_consumption_delta,
+                    reading_date,
+                    factor,
+                    matched_days,
+                    checkpoint_date,
+                ) = cumulative_update
+                checkpoint = next(
+                    reading
+                    for reading in readings
+                    if parse_api_date(reading["date"]) == checkpoint_date
+                )
+                checkpoint_value = float(checkpoint["reading"])
+                print(
+                    "Using shared Tado/Octopus cumulative checkpoint: "
+                    f"{checkpoint_value} on {checkpoint_date}"
                 )
                 stale_preview = reading_date <= latest_tado_date
                 if stale_preview and not allow_stale_preview:
