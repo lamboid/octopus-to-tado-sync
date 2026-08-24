@@ -39,5 +39,4 @@ jobs:
           --octopus-consumption-unit m3 \
           --tado-reading-unit kwh \
           --meter-source calibrated-cumulative \
-          --dry-run-meter \
           --update-tariff
