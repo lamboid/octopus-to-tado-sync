@@ -72,6 +72,7 @@ def test_meter_sync_uses_calibrated_cumulative_delta(mock_get, mock_cumulative):
         date(2026, 8, 22),
         Decimal("2"),
         5,
+        date(2026, 8, 20),
     )
     mock_tado = MagicMock()
     mock_tado.get_eiq_meter_readings.return_value = {
@@ -101,6 +102,7 @@ def test_meter_sync_rejects_cumulative_reading_not_newer_than_tado(mock_cumulati
         date(2026, 8, 20),
         Decimal("2"),
         5,
+        date(2026, 8, 20),
     )
     mock_tado = MagicMock()
     mock_tado.get_eiq_meter_readings.return_value = {
@@ -129,6 +131,7 @@ def test_meter_sync_allows_stale_cumulative_preview_only_when_requested(
         date(2026, 8, 22),
         Decimal("2"),
         5,
+        date(2026, 8, 20),
     )
     mock_tado = MagicMock()
     mock_tado.get_eiq_meter_readings.return_value = {
@@ -153,7 +156,7 @@ def test_meter_sync_allows_stale_cumulative_preview_only_when_requested(
     mock_cumulative.assert_called_once_with(
         "fake-api-key",
         "123456789",
-        date(2026, 8, 20),
+        [date(2026, 8, 23), date(2026, 8, 20)],
         date(2026, 8, 22),
     )
 
@@ -205,17 +208,20 @@ def test_calibrated_cumulative_delta_requires_stable_recent_factor(
         },
     ]
 
-    delta, reading_date, factor, matches = get_calibrated_cumulative_delta(
-        "api-key",
-        "mprn",
-        date(2026, 8, 19),
-        date(2026, 8, 22),
+    delta, reading_date, factor, matches, checkpoint_date = (
+        get_calibrated_cumulative_delta(
+            "api-key",
+            "mprn",
+            [date(2026, 8, 17), date(2026, 8, 19), date(2026, 8, 20)],
+            date(2026, 8, 22),
+        )
     )
 
-    assert delta == pytest.approx(3.5)
+    assert delta == pytest.approx(2.3)
     assert reading_date == date(2026, 8, 22)
     assert factor == Decimal("2")
     assert matches == 4
+    assert checkpoint_date == date(2026, 8, 20)
 
 
 def test_append_github_step_summary_writes_values(tmp_path, monkeypatch):
