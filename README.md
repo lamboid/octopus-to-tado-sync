@@ -117,10 +117,10 @@ insights up-to-date.
 3. Optionally sync Octopus gas **unit tariff** changes to Tado when
    `--update-tariff` is passed and `OCTOPUS_ACCOUNT_NUMBER` is configured.
 
-The supplied workflow currently uses `--meter-source calibrated-cumulative`
-with `--dry-run-meter`. It validates the Octopus cumulative register against
-recent daily usage and reports the proposed Tado reading without submitting it.
-Remove `--dry-run-meter` only after reviewing a successful workflow summary.
+The supplied workflow uses `--meter-source calibrated-cumulative`. It validates
+the Octopus cumulative register against recent daily usage and submits only
+when Octopus has a reading newer than Tado's latest meter reading. Add
+`--dry-run-meter` to calculate and report a proposal without submitting it.
 
 ### Optional Tariff Sync
 
