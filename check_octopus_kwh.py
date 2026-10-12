@@ -638,13 +638,22 @@ def accumulation_delta_ratios(
     )
     ratios: List[Decimal] = []
     for previous, current in zip(ordered, ordered[1:]):
+        previous_end = previous.get("intervalEnd") or previous.get("intervalStart")
         current_end = current.get("intervalEnd") or current.get("intervalStart")
-        if not current_end:
+        if not previous_end or not current_end:
             continue
         try:
+            previous_date = datetime.fromisoformat(
+                str(previous_end).replace("Z", "+00:00")
+            ).date()
             current_date = datetime.fromisoformat(
                 str(current_end).replace("Z", "+00:00")
             ).date()
+            # A gap spans several days of usage, so it cannot be calibrated
+            # against only the final day's interval. Keep the cumulative
+            # readings themselves for the eventual checkpoint-to-latest delta.
+            if current_date - previous_date != timedelta(days=1):
+                continue
             usage = usage_by_end_date[current_date.isoformat()]
             delta = Decimal(str(current["value"])) - Decimal(str(previous["value"]))
             if usage > 0 and delta > 0:
