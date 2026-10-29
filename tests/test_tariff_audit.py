@@ -134,3 +134,39 @@ def test_saved_overlap_marks_both_records():
         "overlaps_saved_record" in record["reasons"]
         for record in result["replace_candidates"]
     )
+
+
+def test_ambiguous_source_is_reported_without_selecting_a_price(monkeypatch):
+    agreements = [
+        {"tariff_code": "G-1R-TEST-J", "valid_from": "2026-01-01", "valid_to": None}
+    ]
+    account = {
+        "properties": [
+            {"gas_meter_points": [{"mprn": "test", "agreements": agreements}]}
+        ]
+    }
+    monkeypatch.setattr(
+        audit.sync, "get_octopus_account_details", Mock(return_value=account)
+    )
+    monkeypatch.setattr(
+        audit.sync,
+        "get_octopus_standard_unit_rates",
+        Mock(
+            return_value=[
+                {
+                    "value_inc_vat": price,
+                    "valid_from": "2026-01-01",
+                    "valid_to": None,
+                    "payment_method": method,
+                }
+                for price, method in [(7, "DIRECT_DEBIT"), (8, "NON_DIRECT_DEBIT")]
+            ]
+        ),
+    )
+    periods, issues = audit.read_source_periods("test", "test", "test", "test")
+    assert periods == []
+    assert len(issues) == 1
+    assert {rate["payment_method"] for rate in issues[0]["rate_candidates"]} == {
+        "DIRECT_DEBIT",
+        "NON_DIRECT_DEBIT",
+    }

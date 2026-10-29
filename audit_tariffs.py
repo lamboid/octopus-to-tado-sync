@@ -174,6 +174,57 @@ def build_audit(saved_records, expected_periods, today=None):
     }
 
 
+def read_source_periods(api_key, account_number, mprn, serial):
+    account = sync.get_octopus_account_details(api_key, account_number)
+    agreements = sync.get_octopus_gas_agreements(account, mprn, serial)
+    if not agreements:
+        raise ValueError("No matching gas agreements for audit")
+    periods, issues = [], []
+    for agreement in agreements:
+        tariff = agreement.get("tariff_code") or agreement.get("tariffCode")
+        if not tariff:
+            raise ValueError("Gas agreement has no tariff code")
+        product = agreement.get(
+            "product_code"
+        ) or sync.derive_product_code_from_tariff_code(tariff)
+        rates = sync.get_octopus_standard_unit_rates(api_key, product, tariff)
+        try:
+            periods.extend(sync.build_octopus_tariff_periods(agreement, rates))
+        except (ValueError, RuntimeError) as error:
+            # Emit only public product/rate facts, not account or meter data.
+            start = sync.parse_api_date(agreement.get("valid_from"))
+            end = sync.parse_api_date(agreement.get("valid_to"))
+            relevant = []
+            for rate in rates:
+                rate_start = sync.parse_api_date(rate.get("valid_from"))
+                rate_end = sync.parse_api_date(rate.get("valid_to"))
+                if (end is None or rate_start is None or rate_start < end) and (
+                    start is None or rate_end is None or rate_end > start
+                ):
+                    relevant.append(
+                        {
+                            key: rate.get(key)
+                            for key in (
+                                "valid_from",
+                                "valid_to",
+                                "value_inc_vat",
+                                "payment_method",
+                            )
+                        }
+                    )
+            issues.append(
+                {
+                    "product_code": product,
+                    "tariff_code": tariff,
+                    "agreement_from": str(start),
+                    "agreement_to": str(end) if end else None,
+                    "reason": type(error).__name__,
+                    "rate_candidates": relevant,
+                }
+            )
+    return periods, issues
+
+
 def main():
     required = (
         "TADO_EMAIL",
@@ -203,14 +254,29 @@ def main():
     if not isinstance(records, list):
         raise ValueError("Tado tariff history is not a list")
     print("Tariff audit phase: reading complete Octopus gas tariff history")
-    expected = sync.discover_octopus_tariff_periods(
+    expected, issues = read_source_periods(
         os.environ["OCTOPUS_API_KEY"],
         os.environ["OCTOPUS_ACCOUNT_NUMBER"],
         os.environ["OCTOPUS_MPRN"],
         os.environ["OCTOPUS_GAS_SERIAL"],
-        since_date=None,
     )
-    report = build_audit(records, expected)
+    if issues:
+        normalized = sorted(
+            (normalize_saved(record) for record in records),
+            key=lambda x: (x["start"], x["record_ref"]),
+        )
+        report = {
+            "mode": "source_ambiguity_blocks_repair_plan",
+            "counts": {"saved": len(records), "source_issues": len(issues)},
+            "saved_snapshot_sha256": fingerprint(normalized),
+            "saved_periods": normalized,
+            "source_issues": issues,
+            "unambiguous_source_periods": [
+                normalize_expected(period) for period in expected
+            ],
+        }
+    else:
+        report = build_audit(records, expected)
     sync.append_github_step_summary(
         "Read-only tariff repair audit", list(report["counts"].items())
     )
