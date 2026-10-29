@@ -6,6 +6,7 @@ from decimal import Decimal
 from urllib.parse import quote, urlencode
 
 import requests
+from dateutil.tz import gettz
 from playwright.async_api import async_playwright
 from PyTado.interface import Tado
 from requests.auth import HTTPBasicAuth
@@ -351,21 +352,50 @@ def get_octopus_standard_unit_rates(api_key, product_code, tariff_code):
         ) from exc
 
 
+def parse_tariff_boundary(value):
+    """Return a UK calendar boundary, refusing unsupported intraday prices."""
+    if value is None:
+        return None
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    parsed = (
+        value
+        if isinstance(value, datetime)
+        else datetime.fromisoformat(value.replace("Z", "+00:00"))
+    )
+    london = gettz("Europe/London")
+    if london is None:
+        raise RuntimeError("Europe/London timezone data is unavailable")
+    local = (
+        parsed.replace(tzinfo=london)
+        if parsed.tzinfo is None
+        else parsed.astimezone(london)
+    )
+    if local.time() != datetime.min.time():
+        raise ValueError(
+            "Intraday gas tariff changes cannot be represented as Tado daily periods"
+        )
+    return local.date()
+
+
 def build_octopus_tariff_periods(agreement, unit_rates):
     """Convert Octopus unit-rate records into Tado-friendly tariff periods."""
-    agreement_start = parse_api_date(agreement.get("valid_from")) or date.min
-    agreement_end = parse_api_date(agreement.get("valid_to"))
+    agreement_start = parse_tariff_boundary(agreement.get("valid_from")) or date.min
+    agreement_end = parse_tariff_boundary(agreement.get("valid_to"))
 
     raw_periods = []
     for rate in unit_rates:
         tariff_pence = rate.get("value_inc_vat")
-        rate_start = parse_api_date(rate.get("valid_from"))
+        rate_start = parse_tariff_boundary(rate.get("valid_from"))
+        rate_end = parse_tariff_boundary(rate.get("valid_to"))
 
         if tariff_pence is None or rate_start is None:
             continue
 
         start_date = max(agreement_start, rate_start)
-        if agreement_end is not None and start_date > agreement_end:
+        ends = [end for end in (agreement_end, rate_end) if end is not None]
+        end_exclusive = min(ends) if ends else None
+        if end_exclusive is not None and start_date >= end_exclusive:
             continue
 
         raw_periods.append(
@@ -373,35 +403,42 @@ def build_octopus_tariff_periods(agreement, unit_rates):
                 "start_date": start_date,
                 "tariff_pence_per_kwh": tariff_pence,
                 "unit": "kWh",
+                "end_date": (
+                    end_exclusive - timedelta(days=1) if end_exclusive else None
+                ),
             }
         )
 
     raw_periods.sort(key=lambda period: period["start_date"])
 
-    merged_periods = []
+    distinct_periods = []
     for period in raw_periods:
-        if merged_periods and merged_periods[-1]["start_date"] == period["start_date"]:
-            merged_periods[-1] = period
+        if (
+            distinct_periods
+            and distinct_periods[-1]["start_date"] == period["start_date"]
+        ):
+            if distinct_periods[-1] != period:
+                raise RuntimeError("Ambiguous Octopus gas rates share a start date")
             continue
-
+        distinct_periods.append(period)
+    merged_periods = []
+    for index, period in enumerate(distinct_periods):
+        if index + 1 < len(distinct_periods):
+            next_end = distinct_periods[index + 1]["start_date"] - timedelta(days=1)
+            period["end_date"] = (
+                min(period["end_date"], next_end) if period["end_date"] else next_end
+            )
         if (
             merged_periods
+            and merged_periods[-1]["end_date"] is not None
+            and merged_periods[-1]["end_date"] + timedelta(days=1)
+            == period["start_date"]
             and merged_periods[-1]["tariff_pence_per_kwh"]
             == period["tariff_pence_per_kwh"]
         ):
-            continue
-
-        merged_periods.append(period)
-
-    for index, period in enumerate(merged_periods):
-        end_date = None
-        if index + 1 < len(merged_periods):
-            end_date = merged_periods[index + 1]["start_date"] - timedelta(days=1)
-        elif agreement_end is not None:
-            end_date = agreement_end
-
-        period["end_date"] = end_date
-
+            merged_periods[-1]["end_date"] = period["end_date"]
+        else:
+            merged_periods.append(period)
     return merged_periods
 
 
@@ -411,11 +448,15 @@ def get_tado_last_tariff_checkpoint(tado):
         tariff_data = call_tado_method(tado, "get_eiq_tariffs", "getEIQTariffs")
 
         if isinstance(tariff_data, dict):
-            tariffs = tariff_data.get("tariffs", [])
+            if tariff_data.get("code") or "tariffs" not in tariff_data:
+                raise RuntimeError("Tado did not return tariff history")
+            tariffs = tariff_data["tariffs"]
         elif isinstance(tariff_data, list):
             tariffs = tariff_data
         else:
-            tariffs = []
+            raise RuntimeError("Unexpected Tado tariff history response")
+        if not isinstance(tariffs, list):
+            raise RuntimeError("Unexpected Tado tariff history entries")
 
         latest_start_date = None
         for tariff in tariffs:
@@ -439,8 +480,9 @@ def get_tado_last_tariff_checkpoint(tado):
 
         return latest_start_date
     except Exception as e:
-        print(f"Could not retrieve Tado tariff history: {e}")
-        return None
+        raise RuntimeError(
+            "Could not retrieve Tado tariff history; refusing blind tariff backfill"
+        ) from e
 
 
 def discover_octopus_tariff_periods(
@@ -463,7 +505,7 @@ def discover_octopus_tariff_periods(
     )
 
     for agreement in sorted_agreements:
-        agreement_end = parse_api_date(agreement.get("valid_to"))
+        agreement_end = parse_tariff_boundary(agreement.get("valid_to"))
         if (
             since_date is not None
             and agreement_end is not None
@@ -486,6 +528,14 @@ def discover_octopus_tariff_periods(
             periods_to_sync.append(period)
 
     periods_to_sync.sort(key=lambda period: period["start_date"])
+    for previous, current in zip(periods_to_sync, periods_to_sync[1:]):
+        if (
+            previous["end_date"] is None
+            or previous["end_date"] >= current["start_date"]
+        ):
+            raise RuntimeError(
+                "Overlapping Octopus gas tariff periods; refusing submission"
+            )
     return periods_to_sync
 
 
@@ -521,6 +571,23 @@ def sync_octopus_tariffs_to_tado(
             payload["is_period"] = False
 
         result = call_tado_method(tado, "set_eiq_tariff", "setEIQTariff", **payload)
+        if not isinstance(result, dict) or result.get("code") or not result.get("id"):
+            code = (
+                result.get("code", "unconfirmed_response")
+                if isinstance(result, dict)
+                else "unconfirmed_response"
+            )
+            append_github_step_summary(
+                "Tado tariff submission",
+                [
+                    ("Status", "Rejected or unconfirmed; stopped"),
+                    ("Accepted before stop", len(synced_periods)),
+                    ("Failed start date", payload["from_date"]),
+                ],
+            )
+            raise RuntimeError(
+                f"Tado tariff submission failed on {payload['from_date']}: {code}"
+            )
         print(f"Synced tariff period to Tado: {payload} -> {result}")
         synced_periods.append(payload)
 

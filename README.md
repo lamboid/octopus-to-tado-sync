@@ -175,6 +175,18 @@ troubleshoot any issues.
   Meter sync runs first, so an earlier meter submission may already have
   succeeded; tariff failure does not roll it back. Inspect the log before
   deciding to rerun.
+- **Tariff date validation**: UTC tariff timestamps are converted to UK calendar
+  dates before exclusive Octopus end boundaries become inclusive Tado end
+  dates. Each period is limited by both agreement and rate validity. Gaps are
+  preserved; overlapping or ambiguous periods and intraday changes stop the
+  sync before tariff submission. UK conversion uses the pinned
+  `python-dateutil` dependency on Windows and Linux.
+- **Tado tariff rejections**: An error response or missing creation ID stops
+  submission immediately and fails the job, with the accepted count and failed
+  start date in the summary. Unreadable tariff history prevents blind backfill.
+  These safeguards do not repair existing tariff records or refill historical
+  gaps behind the latest stored checkpoint; those require a separate audit
+  and an approved repair plan.
 
 ### Contributions
 

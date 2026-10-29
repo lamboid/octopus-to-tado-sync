@@ -507,7 +507,7 @@ def test_sync_octopus_tariffs_to_tado(mock_get):
     rate_response.status_code = 200
     rate_response.json.return_value = {
         "results": [
-            {"value_inc_vat": 7.10, "valid_from": "2025-04-01T00:00:00Z"},
+            {"value_inc_vat": 7.10, "valid_from": "2025-03-31T23:00:00Z"},
             {"value_inc_vat": 6.23, "valid_from": "2025-01-01T00:00:00Z"},
         ],
         "next": None,
@@ -517,7 +517,7 @@ def test_sync_octopus_tariffs_to_tado(mock_get):
 
     mock_tado = MagicMock()
     mock_tado.get_eiq_tariffs.return_value = {"tariffs": []}
-    mock_tado.set_eiq_tariff.side_effect = [{"status": "ok-1"}, {"status": "ok-2"}]
+    mock_tado.set_eiq_tariff.side_effect = [{"id": "ok-1"}, {"id": "ok-2"}]
 
     synced = sync_octopus_tariffs_to_tado(
         mock_tado, "fake-api-key", "A-12345", "123456789", "GAS123"
@@ -568,7 +568,7 @@ def test_sync_octopus_tariffs_to_tado_uses_checkpoint(mock_get):
     rate_response.status_code = 200
     rate_response.json.return_value = {
         "results": [
-            {"value_inc_vat": 7.10, "valid_from": "2025-04-01T00:00:00Z"},
+            {"value_inc_vat": 7.10, "valid_from": "2025-03-31T23:00:00Z"},
             {"value_inc_vat": 6.23, "valid_from": "2025-01-01T00:00:00Z"},
         ],
         "next": None,
@@ -580,6 +580,7 @@ def test_sync_octopus_tariffs_to_tado_uses_checkpoint(mock_get):
     mock_tado.get_eiq_tariffs.return_value = {
         "tariffs": [{"startDate": "2025-01-01", "tariffInCents": 623}]
     }
+    mock_tado.set_eiq_tariff.return_value = {"id": "accepted"}
 
     synced = sync_octopus_tariffs_to_tado(
         mock_tado, "fake-api-key", "A-12345", "123456789", "GAS123"
