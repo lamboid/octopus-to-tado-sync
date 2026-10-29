@@ -296,15 +296,17 @@ def get_octopus_account_details(api_key, account_number):
 
 
 def derive_product_code_from_tariff_code(tariff_code):
-    """Infer the Octopus product code from a tariff code."""
+    """Extract a product from modern or legacy Octopus fuel tariff codes."""
     parts = tariff_code.split("-")
-    if len(parts) <= 2:
-        return tariff_code
-
-    product_parts = parts[2:]
+    if len(parts) < 3 or parts[0] not in ("G", "E"):
+        raise ValueError(f"Unsupported Octopus tariff code format: {tariff_code}")
+    product_parts = parts[1:]
+    if product_parts[0] in ("1R", "2R"):
+        product_parts = product_parts[1:]
     if product_parts and len(product_parts[-1]) == 1 and product_parts[-1].isalpha():
         product_parts = product_parts[:-1]
-
+    if not product_parts or any(not part for part in product_parts):
+        raise ValueError(f"No product code in Octopus tariff: {tariff_code}")
     return "-".join(product_parts)
 
 
@@ -461,6 +463,13 @@ def discover_octopus_tariff_periods(
     )
 
     for agreement in sorted_agreements:
+        agreement_end = parse_api_date(agreement.get("valid_to"))
+        if (
+            since_date is not None
+            and agreement_end is not None
+            and agreement_end <= since_date
+        ):
+            continue
         tariff_code = agreement.get("tariff_code") or agreement.get("tariffCode")
         if not tariff_code:
             continue

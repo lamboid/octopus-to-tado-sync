@@ -169,6 +169,9 @@ troubleshoot any issues.
   used as a submission checkpoint. Unresolved discrepancies stop submission.
 - **Tariff failures**: A failed tariff sync now fails the job. Unit-rate lookup
   errors identify the product and tariff codes, which helps locate a 404.
+  Both legacy gas codes such as `G-ISDFEDV1023SR1R-J` and newer `G-1R-...`
+  codes are supported. Agreements ending at or before the latest stored Tado
+  tariff start are skipped before rate lookup; required history is retained.
   Meter sync runs first, so an earlier meter submission may already have
   succeeded; tariff failure does not roll it back. Inspect the log before
   deciding to rerun.
