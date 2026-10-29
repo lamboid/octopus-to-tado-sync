@@ -55,7 +55,9 @@ def test_gap_preserves_full_checkpoint_delta():
 
 
 @pytest.mark.parametrize("problem", ["too_few", "unstable"])
-def test_gap_fix_preserves_calibration_guards(problem):
+def test_gap_fix_preserves_calibration_guards(problem, capsys, tmp_path, monkeypatch):
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     intervals, cumulative = datasets()
     if problem == "too_few":
         cumulative.pop()
@@ -67,3 +69,22 @@ def test_gap_fix_preserves_calibration_guards(problem):
         get_calibrated_cumulative_delta(
             "test", "test", [date(2026, 9, 25)], date(2026, 9, 30)
         )
+    reason = (
+        "insufficient matched days" if problem == "too_few" else "inconsistent ratios"
+    )
+    assert reason in capsys.readouterr().out
+    assert reason in summary.read_text()
+    assert "Median ratio" in summary.read_text()
+    assert "2026-09-28" in summary.read_text()
+
+
+def test_calibration_diagnostics_show_dst_elapsed_hours():
+    intervals = [{"value": "1", "intervalEnd": "2026-10-26T00:00:00+00:00"}]
+    cumulative = [
+        {"value": "10", "intervalEnd": "2026-10-25T00:00:00+01:00"},
+        {"value": "12", "intervalEnd": "2026-10-26T00:00:00+00:00"},
+    ]
+    assert probe.accumulation_delta_samples(intervals, cumulative) == [
+        {"end_date": "2026-10-26", "ratio": Decimal("2"), "elapsed_hours": 25}
+    ]
+    assert probe.accumulation_delta_ratios(intervals, cumulative) == [Decimal("2")]

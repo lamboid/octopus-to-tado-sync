@@ -613,10 +613,10 @@ def closest_accumulation_to_time(
     )
 
 
-def accumulation_delta_ratios(
+def accumulation_delta_samples(
     interval_readings: Sequence[Dict[str, Any]],
     accumulation_readings: Sequence[Dict[str, Any]],
-) -> List[Decimal]:
+) -> List[Dict[str, Any]]:
     usage_by_end_date: Dict[str, Decimal] = {}
     for reading in interval_readings:
         interval_end = reading.get("intervalEnd")
@@ -636,7 +636,7 @@ def accumulation_delta_ratios(
             reading.get("intervalEnd") or reading.get("intervalStart") or ""
         ),
     )
-    ratios: List[Decimal] = []
+    samples: List[Dict[str, Any]] = []
     for previous, current in zip(ordered, ordered[1:]):
         previous_end = previous.get("intervalEnd") or previous.get("intervalStart")
         current_end = current.get("intervalEnd") or current.get("intervalStart")
@@ -657,10 +657,36 @@ def accumulation_delta_ratios(
             usage = usage_by_end_date[current_date.isoformat()]
             delta = Decimal(str(current["value"])) - Decimal(str(previous["value"]))
             if usage > 0 and delta > 0:
-                ratios.append(delta / usage)
+                samples.append(
+                    {
+                        "end_date": current_date.isoformat(),
+                        "ratio": delta / usage,
+                        "elapsed_hours": (
+                            datetime.fromisoformat(
+                                str(current_end).replace("Z", "+00:00")
+                            )
+                            - datetime.fromisoformat(
+                                str(previous_end).replace("Z", "+00:00")
+                            )
+                        ).total_seconds()
+                        / 3600,
+                    }
+                )
         except (KeyError, InvalidOperation, TypeError, ValueError):
             continue
-    return ratios
+    return samples
+
+
+def accumulation_delta_ratios(
+    interval_readings: Sequence[Dict[str, Any]],
+    accumulation_readings: Sequence[Dict[str, Any]],
+) -> List[Decimal]:
+    return [
+        sample["ratio"]
+        for sample in accumulation_delta_samples(
+            interval_readings, accumulation_readings
+        )
+    ]
 
 
 def decimal_median(values: Sequence[Decimal]) -> Optional[Decimal]:
