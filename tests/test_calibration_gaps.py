@@ -85,6 +85,12 @@ def test_calibration_diagnostics_show_dst_elapsed_hours():
         {"value": "12", "intervalEnd": "2026-10-26T00:00:00+00:00"},
     ]
     assert probe.accumulation_delta_samples(intervals, cumulative) == [
-        {"end_date": "2026-10-26", "ratio": Decimal("2"), "elapsed_hours": 25}
+        {
+            "end_date": "2026-10-26",
+            "ratio": Decimal("2"),
+            "elapsed_hours": 25,
+            "usage": Decimal("1"),
+            "delta": Decimal("2"),
+        }
     ]
     assert probe.accumulation_delta_ratios(intervals, cumulative) == [Decimal("2")]
