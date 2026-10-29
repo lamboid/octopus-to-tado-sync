@@ -23,6 +23,35 @@ def accumulation_effective_date(reading):
     return parse_api_date(timestamp) - timedelta(days=1)
 
 
+def reconcile_calibration_samples(samples, factor):
+    """Pair adjacent allocation shifts only when their residuals cancel exactly."""
+    pairs = []
+    used = set()
+    unresolved = []
+    for index, sample in enumerate(samples):
+        if index in used or abs(sample["ratio"] - factor) <= Decimal("0.01"):
+            continue
+        for neighbor in (index - 1, index + 1):
+            if neighbor < 0 or neighbor >= len(samples) or neighbor in used:
+                continue
+            first, second = sorted((index, neighbor))
+            left, right = samples[first], samples[second]
+            if parse_api_date(right["end_date"]) - parse_api_date(
+                left["end_date"]
+            ) != timedelta(days=1):
+                continue
+            left_error = left["delta"] - factor * left["usage"]
+            right_error = right["delta"] - factor * right["usage"]
+            if left_error * right_error < 0 and left_error + right_error == 0:
+                pairs.append((first, second))
+                used.update((first, second))
+                break
+        else:
+            unresolved.append(index)
+    # A later pairing may have resolved a previously unmatched sample.
+    return pairs, [index for index in unresolved if index not in used]
+
+
 def get_calibrated_cumulative_delta(
     api_key, mprn, checkpoint_dates, cutoff_date, calibration_days=14
 ):
@@ -59,27 +88,53 @@ def get_calibrated_cumulative_delta(
     accumulation_readings = octopus_probe.extract_readings(
         accumulation_supply, "accumulation"
     )
-    samples = octopus_probe.accumulation_delta_samples(
-        interval_readings, accumulation_readings
-    )
+    calibration_start = cutoff_date - timedelta(days=calibration_days - 1)
+    samples = [
+        sample
+        for sample in octopus_probe.accumulation_delta_samples(
+            interval_readings, accumulation_readings
+        )
+        if calibration_start
+        <= parse_api_date(sample["end_date"]) - timedelta(days=1)
+        <= cutoff_date
+    ]
     ratios = [sample["ratio"] for sample in samples]
     factor = octopus_probe.decimal_median(ratios)
+    pairs, unresolved = (
+        reconcile_calibration_samples(samples, factor)
+        if factor is not None and factor != 0
+        else ([], [])
+    )
+    independent_groups = len(samples) - len(pairs)
     reasons = []
     if len(ratios) < 3:
         reasons.append("insufficient matched days (at least 3 required)")
     if factor is None or factor == 0:
         reasons.append("missing or zero calibration factor")
-    elif any(abs(ratio - factor) > Decimal("0.01") for ratio in ratios):
+    elif unresolved:
         reasons.append("inconsistent ratios (tolerance 0.01 from median)")
+    if pairs and independent_groups < 3:
+        reasons.append(
+            "insufficient independent calibration groups (at least 3 required)"
+        )
     diagnostics = [
         ("Status", "; ".join(reasons) if reasons else "Passed"),
         ("Query start", query_start.isoformat()),
         ("Query end", query_end.isoformat()),
+        ("Calibration consumption dates", f"{calibration_start} to {cutoff_date}"),
         ("Interval records", len(interval_readings)),
         ("Cumulative records", len(accumulation_readings)),
         ("Matched days", len(ratios)),
         ("Median ratio", str(factor)),
+        ("Independent calibration groups", independent_groups),
     ]
+    for first, second in pairs:
+        diagnostics.append(
+            (
+                "Exactly reconciled interval ends",
+                f"{samples[first]['end_date']} and {samples[second]['end_date']}",
+            )
+        )
     for sample in samples:
         diagnostics.append(
             (
@@ -90,12 +145,7 @@ def get_calibrated_cumulative_delta(
     append_github_step_summary("Octopus cumulative calibration", diagnostics)
     for label, value in diagnostics:
         print(f"Calibration {label}: {value}")
-    if (
-        factor is None
-        or factor == 0
-        or len(ratios) < 3
-        or any(abs(ratio - factor) > Decimal("0.01") for ratio in ratios)
-    ):
+    if reasons:
         raise RuntimeError(
             "Octopus cumulative calibration was not stable across at least 3 days: "
             + "; ".join(reasons)
@@ -111,8 +161,20 @@ def get_calibrated_cumulative_delta(
     if not available_dates:
         raise RuntimeError("Octopus returned no cumulative data before the cutoff")
     reading_date = max(available_dates)
+    # Never start/end a submitted delta inside a reconciled two-day span:
+    # its middle register value is the point known to have shifted.
+    shifted_dates = {
+        parse_api_date(samples[first]["end_date"]) - timedelta(days=1)
+        for first, _ in pairs
+    }
+    if reading_date in shifted_dates:
+        raise RuntimeError(
+            "Latest cumulative date is inside a reconciled allocation pair"
+        )
     shared_dates = [
-        day for day in checkpoint_dates if day in by_date and day < reading_date
+        day
+        for day in checkpoint_dates
+        if day in by_date and day < reading_date and day not in shifted_dates
     ]
     if not shared_dates:
         raise RuntimeError(
@@ -688,7 +750,7 @@ def get_meter_reading_total_consumption(
                             "Tado checkpoint",
                             f"{checkpoint_value:.3f} {target_unit} on {checkpoint_date}",
                         ),
-                        ("Matched stable calibration days", matched_days),
+                        ("Matched calibration days", matched_days),
                         ("Observed aggregate factor", factor),
                         (
                             "Corrected cumulative delta",

@@ -160,8 +160,13 @@ troubleshoot any issues.
 - **Cumulative calibration failures**: The job log and summary show the number
   of matched days, median ratio, and each matched date's ratio and elapsed
   hours. The error distinguishes insufficient matches from inconsistent
-  ratios. The existing minimum of three matches and 0.01 tolerance still
-  apply; a failed calibration stops before submitting a meter reading.
+  ratios. Calibration uses only consumption dates in the 14-day window ending
+  at the delayed cutoff; older records remain available for checkpoint lookup.
+  Individual ratios retain the 0.01 tolerance. An outlying day can be paired
+  with an adjacent day only if their opposite discrepancies cancel exactly
+  against the median factor. Each pair counts as one independent group, with
+  at least three groups required. The shifted middle-day register cannot be
+  used as a submission checkpoint. Unresolved discrepancies stop submission.
 - **Tariff failures**: A failed tariff sync now fails the job. Unit-rate lookup
   errors identify the product and tariff codes, which helps locate a 404.
   Meter sync runs first, so an earlier meter submission may already have

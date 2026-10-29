@@ -661,6 +661,8 @@ def accumulation_delta_samples(
                     {
                         "end_date": current_date.isoformat(),
                         "ratio": delta / usage,
+                        "usage": usage,
+                        "delta": delta,
                         "elapsed_hours": (
                             datetime.fromisoformat(
                                 str(current_end).replace("Z", "+00:00")
