@@ -151,6 +151,25 @@ python sync_octopus_tado.py \
 
 ### Troubleshooting
 
+The manual **Check Octopus gas readings API** workflow has an optional
+`tariff_audit` mode. It reads saved Tado tariffs and complete Octopus gas rate
+history, producing a candidate repair plan with hashed record references and
+snapshot fingerprints. It preserves matching saved periods and identifies
+date/price mismatches, overlaps, gaps and records outside source validity.
+Outside source validity means unverified, not automatically wrong. A transport
+guard blocks Tado data writes; only OAuth authorization POSTs and reads are
+permitted. The output excludes credentials and household identifiers. It does
+not execute repairs; a supported mutation route and exact approval are required.
+
+`plan_tariff_repair.py` turns a confirmed payment-method scenario and matching
+redacted saved snapshot into an ordered, review-only plan. It preserves matching
+records, maps affected records to corrected fragments using PUT, and uses POST
+only for unmatched fragments. It refuses plans requiring deletion, stale input
+fingerprints, or overlapping intermediate states. A full simulation must match
+the selected source's daily coverage and prices. The generated plan includes a
+SHA-256 digest covering every operation; this command has no network or write
+capability against Tado.
+
 - **Tado login failures**: The log and job summary identify client initialization,
   browser authorization, or device token activation. OAuth requests without an
   explicit timeout use 10 seconds to connect and 30 seconds to read; existing

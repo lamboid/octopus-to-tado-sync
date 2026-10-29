@@ -1067,8 +1067,8 @@ async def browser_login(url, username, password):
         await browser.close()
 
 
-def tado_login(username, password):
-    session = TadoLoginSession()
+def tado_login(username, password, session=None):
+    session = session if session is not None else TadoLoginSession()
     phase = "client initialization"
     try:
         print(f"Tado login phase: {phase}")
