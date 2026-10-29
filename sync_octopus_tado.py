@@ -59,10 +59,37 @@ def get_calibrated_cumulative_delta(
     accumulation_readings = octopus_probe.extract_readings(
         accumulation_supply, "accumulation"
     )
-    ratios = octopus_probe.accumulation_delta_ratios(
+    samples = octopus_probe.accumulation_delta_samples(
         interval_readings, accumulation_readings
     )
+    ratios = [sample["ratio"] for sample in samples]
     factor = octopus_probe.decimal_median(ratios)
+    reasons = []
+    if len(ratios) < 3:
+        reasons.append("insufficient matched days (at least 3 required)")
+    if factor is None or factor == 0:
+        reasons.append("missing or zero calibration factor")
+    elif any(abs(ratio - factor) > Decimal("0.01") for ratio in ratios):
+        reasons.append("inconsistent ratios (tolerance 0.01 from median)")
+    diagnostics = [
+        ("Status", "; ".join(reasons) if reasons else "Passed"),
+        ("Query start", query_start.isoformat()),
+        ("Query end", query_end.isoformat()),
+        ("Interval records", len(interval_readings)),
+        ("Cumulative records", len(accumulation_readings)),
+        ("Matched days", len(ratios)),
+        ("Median ratio", str(factor)),
+    ]
+    for sample in samples:
+        diagnostics.append(
+            (
+                sample["end_date"],
+                f"ratio={sample['ratio']:.6f}; elapsed={sample['elapsed_hours']:g}h",
+            )
+        )
+    append_github_step_summary("Octopus cumulative calibration", diagnostics)
+    for label, value in diagnostics:
+        print(f"Calibration {label}: {value}")
     if (
         factor is None
         or factor == 0
@@ -70,7 +97,8 @@ def get_calibrated_cumulative_delta(
         or any(abs(ratio - factor) > Decimal("0.01") for ratio in ratios)
     ):
         raise RuntimeError(
-            "Octopus cumulative calibration was not stable across at least 3 days"
+            "Octopus cumulative calibration was not stable across at least 3 days: "
+            + "; ".join(reasons)
         )
 
     by_date = {}
@@ -250,7 +278,13 @@ def get_octopus_standard_unit_rates(api_key, product_code, tariff_code):
         f"https://api.octopus.energy/v1/products/{product_code}/gas-tariffs/"
         f"{encoded_tariff_code}/standard-unit-rates/"
     )
-    return fetch_paginated_results(url, api_key)
+    try:
+        return fetch_paginated_results(url, api_key)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"Octopus gas unit-rate lookup failed for product {product_code}, "
+            f"tariff {tariff_code}: {exc}"
+        ) from exc
 
 
 def build_octopus_tariff_periods(agreement, unit_rates):
@@ -1036,7 +1070,7 @@ def main():
 
     if args.update_tariff:
         if not args.octopus_account_number:
-            print(
+            raise RuntimeError(
                 "--update-tariff was enabled but no Octopus account number was "
                 "provided. Set OCTOPUS_ACCOUNT_NUMBER or use "
                 "--octopus-account-number."
@@ -1051,7 +1085,16 @@ def main():
                     args.gas_serial_number,
                 )
             except Exception as e:
-                print(f"Tariff sync failed: {e}")
+                append_github_step_summary(
+                    "Tado tariff sync",
+                    [
+                        (
+                            "Status",
+                            "Failed; any earlier meter submission is not rolled back",
+                        )
+                    ],
+                )
+                raise RuntimeError(f"Tariff sync failed: {e}") from e
 
 
 if __name__ == "__main__":

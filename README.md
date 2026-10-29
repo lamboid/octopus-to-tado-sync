@@ -157,6 +157,16 @@ that your Octopus API key is valid.
 - **Workflow failures**: Detailed logs for each sync run can be found in the
   **Actions** tab of your repository. Use these logs to identify and
 troubleshoot any issues.
+- **Cumulative calibration failures**: The job log and summary show the number
+  of matched days, median ratio, and each matched date's ratio and elapsed
+  hours. The error distinguishes insufficient matches from inconsistent
+  ratios. The existing minimum of three matches and 0.01 tolerance still
+  apply; a failed calibration stops before submitting a meter reading.
+- **Tariff failures**: A failed tariff sync now fails the job. Unit-rate lookup
+  errors identify the product and tariff codes, which helps locate a 404.
+  Meter sync runs first, so an earlier meter submission may already have
+  succeeded; tariff failure does not roll it back. Inspect the log before
+  deciding to rerun.
 
 ### Contributions
 
