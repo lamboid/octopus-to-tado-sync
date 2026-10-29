@@ -7,6 +7,7 @@ from urllib.parse import quote, urlencode
 
 import requests
 from dateutil.tz import gettz
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 from PyTado.interface import Tado
 from requests.auth import HTTPBasicAuth
@@ -14,6 +15,50 @@ from requests.auth import HTTPBasicAuth
 import check_octopus_kwh as octopus_probe
 
 DEFAULT_M3_TO_KWH_FACTOR = 11.1868
+
+
+class TadoLoginSession(requests.Session):
+    """Bound requests used by PyTado's OAuth flow without retrying token POSTs."""
+
+    def __init__(self):
+        super().__init__()
+        self.last_http_status = None
+
+    def request(self, method, url, **kwargs):
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = (10, 30)
+        self.last_http_status = None
+        response = super().request(method, url, **kwargs)
+        self.last_http_status = response.status_code
+        return response
+
+
+def tado_login_failure_kind(error, http_status):
+    """Classify wrapped failures without including messages, URLs or tokens."""
+    pending, seen = [error], set()
+    types = []
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        types.append(current)
+        pending.extend(
+            child
+            for child in (current.__cause__, current.__context__, *current.args)
+            if isinstance(child, BaseException)
+        )
+    if any(
+        isinstance(item, (requests.Timeout, PlaywrightTimeoutError)) for item in types
+    ):
+        return "request or browser timeout"
+    if any(isinstance(item, requests.ConnectionError) for item in types):
+        return "connection failure; no HTTP response confirmed"
+    if http_status == 429:
+        return "HTTP 429 rate limit"
+    if http_status in (400, 401, 403):
+        return f"authentication response HTTP {http_status}"
+    return "authorization did not complete"
 
 
 def accumulation_effective_date(reading):
@@ -1023,25 +1068,35 @@ async def browser_login(url, username, password):
 
 
 def tado_login(username, password):
-    tado = Tado(token_file_path="/tmp/tado_refresh_token")
-
-    status = tado.device_activation_status()
-
-    if status == "PENDING":
-        url = tado.device_verification_url()
-
-        asyncio.run(browser_login(url, username, password))
-
-        tado.device_activation()
-
+    session = TadoLoginSession()
+    phase = "client initialization"
+    try:
+        print(f"Tado login phase: {phase}")
+        tado = Tado(token_file_path="/tmp/tado_refresh_token", http_session=session)
         status = tado.device_activation_status()
-
-    if status == "COMPLETED":
+        if status == "PENDING":
+            phase = "browser authorization"
+            print(f"Tado login phase: {phase}")
+            url = tado.device_verification_url()
+            asyncio.run(browser_login(url, username, password))
+            phase = "device token activation"
+            print(f"Tado login phase: {phase}")
+            tado.device_activation()
+            status = tado.device_activation_status()
+        if status != "COMPLETED":
+            raise RuntimeError("Tado activation incomplete")
         print("Login successful")
-    else:
-        print(f"Login status is {status}")
-
-    return tado
+        return tado
+    except Exception as error:
+        kind = tado_login_failure_kind(error, session.last_http_status)
+        session.close()
+        append_github_step_summary(
+            "Tado login",
+            [("Status", "Failed before sync"), ("Phase", phase), ("Failure", kind)],
+        )
+        # Requests exceptions may contain device codes in the URL. Suppress
+        # the original exception chain rather than leaking it into job logs.
+        raise RuntimeError(f"Tado login failed during {phase}: {kind}") from None
 
 
 def send_reading_to_tado(username, password, reading, reading_date=None):
