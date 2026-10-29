@@ -151,6 +151,15 @@ python sync_octopus_tado.py \
 
 ### Troubleshooting
 
+- **Tado login failures**: The log and job summary identify client initialization,
+  browser authorization, or device token activation. OAuth requests without an
+  explicit timeout use 10 seconds to connect and 30 seconds to read; existing
+  explicit library timeouts are retained. The scheduled/manual job has a
+  15-minute limit. Login must reach `COMPLETED` before sync starts. Transport
+  errors are distinguished from confirmed HTTP 429 responses, without printing
+  the original exception chain or device-code URLs. Token exchanges are not
+  automatically retried. Token storage remains runner-local, so a fresh GitHub
+  runner still performs device authorization.
 - **Incorrect credentials**: If the script fails due to incorrect credentials,
   ensure that the email, password, MPRN, and serial number are accurate. Verify
 that your Octopus API key is valid.
