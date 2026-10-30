@@ -93,6 +93,54 @@ def test_drift_before_write_and_unexpected_readback_stop(evidence):
     tado._http.request.assert_called_once()
 
 
+def test_readback_ignores_metadata_but_preserves_record_identity(evidence):
+    record, source = evidence
+    tado = Mock()
+    corrected = dict(record, endDate="2026-10-29", updatedAt="server-managed")
+    tado.get_eiq_tariffs.side_effect = [[record], [record], [corrected]]
+    assert (
+        repair.run_repair(tado, repair.BoundaryRepairSession(), source, apply=True)[
+            "status"
+        ]
+        == "applied_and_independently_verified"
+    )
+    tado.get_eiq_tariffs.side_effect = [
+        [record],
+        [record],
+        [dict(corrected, id="replacement-id")],
+    ]
+    with pytest.raises(repair.BoundaryRepairError, match="read-back differs"):
+        repair.run_repair(tado, repair.BoundaryRepairSession(), source, apply=True)
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_already_corrected_record_is_verified_without_repeating_put(evidence, apply):
+    record, source = evidence
+    tado = Mock()
+    tado.get_eiq_tariffs.return_value = [dict(record, endDate="2026-10-29")]
+    result = repair.run_repair(
+        tado, repair.BoundaryRepairSession(), source, apply=apply
+    )
+    assert result["status"] == "already_corrected_independently_verified_no_write"
+    tado._http.request.assert_not_called()
+
+
+@pytest.mark.parametrize("status", [200, 201, 204, 302, 400])
+def test_http_success_still_requires_separate_readback(status):
+    session = repair.BoundaryRepairSession()
+    url = "https://energy-insights.tado.com/api/homes/test/tariffs/test"
+    payload = {"endDate": "2026-10-29"}
+    request = requests.Request("PUT", url, json=payload).prepare()
+    session.approved_url, session.approved_payload = url, payload
+    with patch.object(requests.Session, "send", return_value=Mock(status_code=status)):
+        if 200 <= status < 300:
+            assert session.send(request).status_code == status
+        else:
+            with pytest.raises(repair.BoundaryRepairError, match=f"HTTP {status}"):
+                session.send(request)
+    assert session.approved_url is None
+
+
 def test_write_transport_is_single_use_and_unknown_outcomes_cannot_replay():
     session = repair.BoundaryRepairSession()
     url = "https://energy-insights.tado.com/api/homes/test/tariffs/test"
@@ -106,7 +154,9 @@ def test_write_transport_is_single_use_and_unknown_outcomes_cannot_replay():
             session.send(request)
         with pytest.raises(RuntimeError, match="unapproved"):
             session.send(request)
-    send.assert_called_once_with(session, request, timeout=(10, 30), allow_redirects=False)
+    send.assert_called_once_with(
+        session, request, timeout=(10, 30), allow_redirects=False
+    )
 
 
 @pytest.mark.parametrize("end", ["2027-03-29", None])

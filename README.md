@@ -226,7 +226,12 @@ end date is 29 March 2027. It defaults to review-only. With `apply` selected,
 it shortens that record to 29 October 2026, retaining its ID and price.
 The exact saved fingerprint and fresh Octopus dates/price must match before
 the single PUT is armed. A second saved-history read guards against drift;
-the final read must show exactly that end-date change and no others.
+the final read must show exactly that end-date change and no others in the
+normalized tariff history (record identity, dates, unit and price). Server
+metadata is excluded from this comparison. An already corrected record is
+recognized by reconstructing its original fingerprint and is never updated again.
+HTTP 2xx responses still require independent read-back; redacted phase/status
+diagnostics distinguish transport failures from verification failures.
 Unknown write outcomes are never replayed. This does not execute the broader
 historical repair plan or submit meter readings. After the verified repair,
 the normal sync can append the newly published daily tariffs.
