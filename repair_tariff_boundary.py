@@ -20,6 +20,10 @@ CORRECTED_END = "2026-10-29"
 REVIEWED_PRICE = Decimal("11.2875")
 
 
+class BoundaryRepairError(RuntimeError):
+    """A deliberately redacted repair diagnostic, safe for workflow output."""
+
+
 class BoundaryRepairSession(audit.ReadOnlyTadoSession):
     """Permit one exact armed PUT; never replay a failed/unknown write."""
 
@@ -34,18 +38,19 @@ class BoundaryRepairSession(audit.ReadOnlyTadoSession):
             or request.url != self.approved_url
             or json.loads(request.body) != self.approved_payload
         ):
-            raise RuntimeError("Boundary repair blocked an unapproved write")
+            raise BoundaryRepairError("Boundary repair blocked an unapproved write")
         self.approved_url = None
         kwargs["timeout"] = (10, 30)
         kwargs["allow_redirects"] = False
         try:
             response = requests.Session.send(self, request, **kwargs)
         except requests.RequestException:
-            raise RuntimeError(
+            raise BoundaryRepairError(
                 "Boundary repair outcome unknown; independently re-read before retrying"
             ) from None
-        if response.status_code not in (200, 204):
-            raise RuntimeError(
+        print(f"Boundary repair HTTP status: {response.status_code}")
+        if not 200 <= response.status_code < 300:
+            raise BoundaryRepairError(
                 f"Boundary repair returned HTTP {response.status_code}; stopped"
             )
         return response
@@ -57,6 +62,12 @@ def prepare_repair(records, source):
         record
         for record in records
         if audit.normalize_saved(record)["record_ref"] == REVIEWED_REF
+        or (
+            sync.parse_api_date(record.get("endDate"))
+            == date.fromisoformat(CORRECTED_END)
+            and audit.normalize_saved(dict(record, endDate=REVIEWED_END))["record_ref"]
+            == REVIEWED_REF
+        )
     ]
     if len(matches) != 1:
         raise ValueError("Reviewed tariff fingerprint changed; no repair permitted")
@@ -64,7 +75,7 @@ def prepare_repair(records, source):
     normalized = audit.normalize_saved(record)
     if (
         normalized["start"] != REVIEWED_START
-        or normalized["end"] != REVIEWED_END
+        or normalized["end"] not in (REVIEWED_END, CORRECTED_END)
         or Decimal(normalized["pence_per_kwh"]) != REVIEWED_PRICE
     ):
         raise ValueError("Reviewed tariff contents changed; no repair permitted")
@@ -94,6 +105,7 @@ def prepare_repair(records, source):
 
 
 def run_repair(tado, session, source, apply=False):
+    print("Boundary repair phase: reading saved history")
     before = sync.get_tado_tariff_history(tado)
     record, payload = prepare_repair(before, source)
     report = {
@@ -102,9 +114,13 @@ def run_repair(tado, session, source, apply=False):
         "payload": payload,
         "status": "review_only_not_executed",
     }
+    if sync.parse_api_date(record["endDate"]) == date.fromisoformat(CORRECTED_END):
+        report["status"] = "already_corrected_independently_verified_no_write"
+        return report
     if not apply:
         return report
     # Re-read immediately before arming the single allowed mutation.
+    print("Boundary repair phase: revalidating saved history")
     fresh = sync.get_tado_tariff_history(tado)
     if audit.fingerprint(fresh) != audit.fingerprint(before):
         raise ValueError("Saved tariff history changed during review; stopped")
@@ -128,9 +144,11 @@ def run_repair(tado, session, source, apply=False):
         ],
     )
     try:
+        print("Boundary repair phase: single approved PUT")
         tado._http.request(request)
     finally:
         session.approved_url = None
+    print("Boundary repair phase: independent read-back")
     after = sync.get_tado_tariff_history(tado)
     expected = [
         dict(item, endDate=CORRECTED_END) if item["id"] == record["id"] else item
@@ -138,10 +156,15 @@ def run_repair(tado, session, source, apply=False):
     ]
 
     def canonical(items):
-        return sorted(items, key=lambda item: str(item["id"]))
+        return sorted(
+            (audit.normalize_saved(item) for item in items),
+            key=lambda item: item["record_ref"],
+        )
 
     if canonical(after) != canonical(expected):
-        raise RuntimeError("Boundary repair read-back differs; stop and investigate")
+        raise BoundaryRepairError(
+            "Boundary repair read-back differs; stop and investigate"
+        )
     report["status"] = "applied_and_independently_verified"
     sync.append_github_step_summary(
         "Tariff repair read-back", [("Status", report["status"])]
@@ -182,6 +205,12 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except BoundaryRepairError as error:
+        print(str(error))
+        sync.append_github_step_summary(
+            "Boundary repair stopped", [("Reason", str(error))]
+        )
+        raise SystemExit(1) from None
     except Exception as error:
         print("Boundary repair stopped: " + type(error).__name__)
         raise SystemExit(1) from None
