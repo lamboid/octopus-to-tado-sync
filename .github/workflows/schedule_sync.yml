@@ -6,6 +6,10 @@ on:
     # Runs every day at 6pm UTC
     - cron: '30 18 * * *'
 
+concurrency:
+  group: tado-octopus-sync
+  cancel-in-progress: false
+
 jobs:
   run_script:
     runs-on: ubuntu-latest

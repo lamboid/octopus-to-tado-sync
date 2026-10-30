@@ -487,8 +487,8 @@ def build_octopus_tariff_periods(agreement, unit_rates):
     return merged_periods
 
 
-def get_tado_last_tariff_checkpoint(tado):
-    """Return the most recent tariff start date stored in Tado, if any."""
+def get_tado_tariff_history(tado):
+    """Read tariff history once, refusing blind tariff backfills."""
     try:
         tariff_data = call_tado_method(tado, "get_eiq_tariffs", "getEIQTariffs")
 
@@ -502,6 +502,18 @@ def get_tado_last_tariff_checkpoint(tado):
             raise RuntimeError("Unexpected Tado tariff history response")
         if not isinstance(tariffs, list):
             raise RuntimeError("Unexpected Tado tariff history entries")
+        return tariffs
+    except Exception as e:
+        raise RuntimeError(
+            "Could not retrieve Tado tariff history; refusing blind tariff backfill"
+        ) from e
+
+
+def get_tado_last_tariff_checkpoint(tado, tariffs=None):
+    """Return the most recent tariff start date stored in Tado, if any."""
+    try:
+        if tariffs is None:
+            tariffs = get_tado_tariff_history(tado)
 
         latest_start_date = None
         for tariff in tariffs:
@@ -588,7 +600,8 @@ def sync_octopus_tariffs_to_tado(
     tado, api_key, account_number, mprn, gas_serial_number
 ):
     """Sync missing Octopus gas tariff periods into Tado Energy IQ."""
-    last_tado_tariff_start = get_tado_last_tariff_checkpoint(tado)
+    saved_tariffs = get_tado_tariff_history(tado)
+    last_tado_tariff_start = get_tado_last_tariff_checkpoint(tado, saved_tariffs)
     tariff_periods = discover_octopus_tariff_periods(
         api_key,
         account_number,
@@ -600,6 +613,35 @@ def sync_octopus_tariffs_to_tado(
     if not tariff_periods:
         print("No Octopus tariff changes need to be synced to Tado")
         return []
+
+    # A start-date checkpoint does not imply the preceding saved period ended.
+    # Validate the whole batch before the first POST; repairs stay explicit.
+    for record in saved_tariffs:
+        start = parse_api_date(record.get("startDate"))
+        end = parse_api_date(record.get("endDate"))
+        if start is None or (end is not None and end < start):
+            raise RuntimeError("Invalid saved Tado tariff dates; audit required")
+        for period in tariff_periods:
+            if start <= (period["end_date"] or date.max) and (
+                end is None or end >= period["start_date"]
+            ):
+                append_github_step_summary(
+                    "Tado tariff preflight",
+                    [
+                        (
+                            "Status",
+                            "Saved tariff overlaps source; no tariffs submitted",
+                        ),
+                        ("Saved start", start),
+                        ("Saved end", end or "open-ended"),
+                        ("Proposed start", period["start_date"]),
+                    ],
+                )
+                raise RuntimeError(
+                    f"Saved Tado tariff {start} to {end or 'open-ended'} "
+                    f"overlaps proposed {period['start_date']}; "
+                    "explicit boundary repair required before tariff submission"
+                )
 
     synced_periods = []
     for period in tariff_periods:

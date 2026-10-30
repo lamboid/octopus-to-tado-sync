@@ -1,0 +1,46 @@
+name: Repair reviewed Tado tariff boundary
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Apply the single reviewed 29 October end-date correction
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tado-octopus-sync
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+      - name: Install existing dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+      - name: Review or apply the exact boundary correction
+        env:
+          APPLY_REPAIR: ${{ inputs.apply }}
+          TADO_EMAIL: ${{ secrets.TADO_EMAIL }}
+          TADO_PASSWORD: ${{ secrets.TADO_PASSWORD }}
+          OCTOPUS_API_KEY: ${{ secrets.OCTOPUS_API_KEY }}
+          OCTOPUS_ACCOUNT_NUMBER: ${{ secrets.OCTOPUS_ACCOUNT_NUMBER }}
+          OCTOPUS_MPRN: ${{ secrets.OCTOPUS_MPRN }}
+          OCTOPUS_GAS_SERIAL: ${{ secrets.OCTOPUS_GAS_SERIAL }}
+        run: |
+          if [ "$APPLY_REPAIR" = "true" ]; then
+            python repair_tariff_boundary.py --apply
+          else
+            python repair_tariff_boundary.py
+          fi

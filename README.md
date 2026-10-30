@@ -216,6 +216,21 @@ troubleshoot any issues.
   gaps behind the latest stored checkpoint; those require a separate audit
   and an approved repair plan.
 
+Before any tariff creation, the complete proposed batch is checked against
+saved Tado coverage, including open-ended periods. An overlap stops tariff
+writes with the saved and proposed dates in the job summary.
+
+The manual **Repair reviewed Tado tariff boundary** workflow addresses only
+the reviewed record starting 29 October 2026 at 11.2875 p/kWh, whose saved
+end date is 29 March 2027. It defaults to review-only. With `apply` selected,
+it shortens that record to 29 October 2026, retaining its ID and price.
+The exact saved fingerprint and fresh Octopus dates/price must match before
+the single PUT is armed. A second saved-history read guards against drift;
+the final read must show exactly that end-date change and no others.
+Unknown write outcomes are never replayed. This does not execute the broader
+historical repair plan or submit meter readings. After the verified repair,
+the normal sync can append the newly published daily tariffs.
+
 ### Contributions
 
 Feel free to contribute to this project by opening issues or submitting pull
