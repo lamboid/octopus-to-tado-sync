@@ -578,7 +578,9 @@ def test_sync_octopus_tariffs_to_tado_uses_checkpoint(mock_get):
 
     mock_tado = MagicMock()
     mock_tado.get_eiq_tariffs.return_value = {
-        "tariffs": [{"startDate": "2025-01-01", "tariffInCents": 623}]
+        "tariffs": [
+            {"startDate": "2025-01-01", "endDate": "2025-03-31", "tariffInCents": 623}
+        ]
     }
     mock_tado.set_eiq_tariff.return_value = {"id": "accepted"}
 
